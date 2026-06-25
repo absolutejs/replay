@@ -43,6 +43,10 @@ export type RecordConfig = {
   blockClass?: string;
   maskTextClass?: string;
   recordCanvas?: boolean;
+  /** Take a fresh FullSnapshot at least this often (ms). Keeps a recent
+   *  restore point in any bounded buffer so a tail that no longer contains
+   *  the session's first snapshot is still self-contained. */
+  checkoutEveryNms?: number;
 };
 
 /** rrweb's `record` — returns a stop handler. */
@@ -157,6 +161,12 @@ export type RecorderOptions = {
   maskTextClass?: string;
   /** Record `<canvas>` (heavier). Default false. */
   recordCanvas?: boolean;
+  /** Take a fresh FullSnapshot at least this often (ms). Essential for the
+   *  bounded-ring controller: without periodic checkouts the only FullSnapshot
+   *  is at session start, so once the ring evicts it the persisted tail begins
+   *  mid-stream and the player throws "Node with id 'N' not found". Default
+   *  60000 (every 60s). Set 0 to disable. */
+  checkoutEveryNms?: number;
   /** Inject rrweb's `record` (default: lazy-imported). */
   record?: RrwebRecord;
   /** Override `Date.now()` for tests. */
@@ -208,6 +218,7 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
 
   const chunkMaxEvents = options.chunkMaxEvents ?? 200;
   const chunkIntervalMs = options.chunkIntervalMs ?? 5000;
+  const checkoutEveryNms = options.checkoutEveryNms ?? 60_000;
   const onError = options.onError ?? (() => {});
 
   let buffer: ReplayEvent[] = [];
@@ -248,6 +259,7 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
     emit,
     maskAllInputs: options.maskAllInputs ?? true,
     maskTextClass: options.maskTextClass ?? "rr-mask",
+    ...(checkoutEveryNms > 0 ? { checkoutEveryNms } : {}),
     ...(options.maskAllText === true ? { maskTextSelector: "*" } : {}),
     ...(options.recordCanvas === true ? { recordCanvas: true } : {}),
   };
@@ -531,11 +543,36 @@ export type ReplayPlayer = {
   destroy: () => void;
 };
 
+// rrweb event type tags (rrweb's EventType enum): Meta = 4, FullSnapshot = 2.
+const RRWEB_FULL_SNAPSHOT = 2;
+const RRWEB_META = 4;
+
+/** rrweb's Replayer must begin at a FullSnapshot (ideally preceded by its
+ *  Meta) — otherwise it applies incremental mutations to nodes that were never
+ *  built and floods the console with "Node with id 'N' not found". A persisted
+ *  ring tail can legitimately start mid-stream (the session's first snapshot
+ *  was evicted, or a byte-bounded tail begins partway through). Trim leading
+ *  events to the first FullSnapshot, keeping the Meta immediately before it.
+ *  Returns the input unchanged when it already starts correctly, or when no
+ *  FullSnapshot is present (nothing we can do — caller surfaces "no replay"). */
+export const trimToFirstSnapshot = (
+  events: ReplayEvent[],
+): ReplayEvent[] => {
+  const firstFull = events.findIndex(
+    (event) => event.type === RRWEB_FULL_SNAPSHOT,
+  );
+  if (firstFull <= 0) return events;
+  const start =
+    events[firstFull - 1]?.type === RRWEB_META ? firstFull - 1 : firstFull;
+
+  return events.slice(start);
+};
+
 export const createReplayPlayer = async (
   options: ReplayPlayerOptions,
 ): Promise<ReplayPlayer> => {
   const Replayer = options.Replayer ?? (await loadRrwebReplayer());
-  const replayer = new Replayer(options.events, {
+  const replayer = new Replayer(trimToFirstSnapshot(options.events), {
     root: options.target,
     ...(options.speed !== undefined ? { speed: options.speed } : {}),
   });
