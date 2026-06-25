@@ -1,0 +1,66 @@
+{
+  "name": "@absolutejs/replay",
+  "version": "0.0.1",
+  "description": "Session replay for the AbsoluteJS observability stack. A tiny zero-hard-dependency recorder (rrweb is an optional, lazy-loaded peer) that chunks DOM recordings and uploads them via a pluggable transport (@absolutejs/blob), privacy-masking by default. Plus chunk assembly + a framework-agnostic player. Stamps a replayId for @absolutejs/beacon to cross-link errors to the exact session.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/absolutejs/replay.git"
+  },
+  "homepage": "https://github.com/absolutejs/replay",
+  "bugs": {
+    "url": "https://github.com/absolutejs/replay/issues"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "license": "BSL-1.1",
+  "author": "Alex Kahn",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && bun build src/index.ts --outdir dist --sourcemap --target=browser --external rrweb && tsc --project tsconfig.build.json",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write \"./**/*.{ts,json,md}\"",
+    "check:package": "bun run typecheck && bun run build && bun run test",
+    "release": "bun run format && bun run check:package && bun publish"
+  },
+  "keywords": [
+    "absolutejs",
+    "replay",
+    "session-replay",
+    "rrweb",
+    "browser",
+    "observability",
+    "rum",
+    "logrocket"
+  ],
+  "peerDependencies": {
+    "rrweb": "^2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "rrweb": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^20.10.6",
+    "@types/bun": "^1.3.14",
+    "prettier": "^3.8.3",
+    "rrweb": "^2.0.1",
+    "typescript": "^5.9.0"
+  }
+}
