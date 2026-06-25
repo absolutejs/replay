@@ -151,6 +151,11 @@ export type RecorderOptions = {
   chunkIntervalMs?: number;
   /** Flush once this many events buffer. Default 200. */
   chunkMaxEvents?: number;
+  /** Resume a prior session: start chunk `seq` here instead of 0, so a new
+   *  page load's chunks don't collide with the previous load's (storage is
+   *  idempotent on (replayId, seq) and would silently drop the duplicates).
+   *  Default 0. */
+  seqStart?: number;
   /** Mask all input values (privacy). Default **true**. */
   maskAllInputs?: boolean;
   /** Mask all text content (high-sensitivity). Default false. */
@@ -222,7 +227,7 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
   const onError = options.onError ?? (() => {});
 
   let buffer: ReplayEvent[] = [];
-  let seq = 0;
+  let seq = options.seqStart ?? 0;
   let chunkCount = 0;
   let lastTimestamp = startedAt;
   let stopFn: (() => void) | undefined;
@@ -339,6 +344,12 @@ export type ReplayControllerOptions = {
   maxBatchBytes?: number;
   /** Max bytes for the keepalive unload tail (stay under the ~64KB cap). Default 55000. */
   maxTailBytes?: number;
+  /** sessionStorage key under which to persist `{ replayId, nextSeq }` so a
+   *  full page reload RESUMES the same replay session (same id, continuing seq)
+   *  instead of orphaning the prior recording and minting a fresh one. Matters
+   *  whenever the app can reload mid-session (e.g. a stale-chunk auto-reload).
+   *  Off by default; SSR-safe (no-op without `window`). */
+  persistSessionKey?: string;
   /** Masking / record-injection / cadence forwarded to the recorder. */
   recorder?: Omit<
     RecorderOptions,
@@ -365,6 +376,45 @@ const RING_CHUNKS_DEFAULT = 120;
 const FLUSH_THROTTLE_DEFAULT_MS = 30_000;
 const BATCH_BYTES_DEFAULT = 700_000;
 const TAIL_BYTES_DEFAULT = 55_000;
+// Backoff schedule for a failed upload batch (ms before each attempt). Covers
+// transient 5xx / network blips without hammering; a hard outage still gives up
+// after the last attempt (the next signal flush retries the whole ring).
+const UPLOAD_BACKOFFS_MS = [0, 500, 2_000];
+
+type PersistedSession = { replayId: string; nextSeq: number };
+
+const readPersistedSession = (key: string): PersistedSession | null => {
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as PersistedSession).replayId === "string" &&
+      typeof (parsed as PersistedSession).nextSeq === "number"
+    ) {
+      return parsed as PersistedSession;
+    }
+  } catch {
+    // Corrupt/blocked storage → start a fresh session rather than throw.
+  }
+
+  return null;
+};
+
+const writePersistedSession = (key: string, value: PersistedSession): void => {
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Private mode / quota — continuity is best-effort, never fatal.
+  }
+};
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 
 // gzip a JSON string when supported (Response(json).body avoids needing a Blob);
 // fall back to plain text where CompressionStream / a body stream is absent.
@@ -425,12 +475,29 @@ export const createReplayController = (
   // True once a report/error/unload made this session worth keeping.
   let sessionMatters = false;
 
+  // Resume the prior session across a full reload when asked: reuse the same
+  // replayId and continue the chunk seq so the new page's chunks append to the
+  // existing recording instead of orphaning it under a fresh id.
+  const persistKey = options.persistSessionKey;
+  const resumed =
+    persistKey !== undefined && typeof window !== "undefined"
+      ? readPersistedSession(persistKey)
+      : null;
+
   const recorder = createRecorder({
     project: options.project,
     upload: (chunk) => {
       ring.push(chunk);
       while (ring.length > maxRing) ring.shift();
+      if (persistKey !== undefined && typeof window !== "undefined") {
+        writePersistedSession(persistKey, {
+          nextSeq: chunk.seq + 1,
+          replayId: recorder.replayId,
+        });
+      }
     },
+    ...(resumed !== null ? { replayId: resumed.replayId } : {}),
+    ...(resumed !== null ? { seqStart: resumed.nextSeq } : {}),
     ...(options.release !== undefined ? { release: options.release } : {}),
     ...(options.environment !== undefined
       ? { environment: options.environment }
@@ -449,12 +516,26 @@ export const createReplayController = (
       "content-type": "application/json",
     };
     if (gzip) headers["content-encoding"] = "gzip";
-    await doFetch(options.endpoint, {
-      body,
-      credentials: "include",
-      headers,
-      method: "POST",
-    });
+    // Retry transient failures (network blip / 5xx) with backoff before giving
+    // up, so a momentary hiccup doesn't silently drop a session segment.
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < UPLOAD_BACKOFFS_MS.length; attempt += 1) {
+      const backoff = UPLOAD_BACKOFFS_MS[attempt] ?? 0;
+      if (backoff > 0) await delay(backoff);
+      try {
+        const response = await doFetch(options.endpoint, {
+          body,
+          credentials: "include",
+          headers,
+          method: "POST",
+        });
+        if (response.ok) return;
+        lastError = new Error(`replay ingest responded ${response.status}`);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError ?? new Error("replay upload failed");
   };
 
   const flush = async (): Promise<string | null> => {

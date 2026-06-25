@@ -11,6 +11,7 @@ import {
   type ReplayEvent,
   type RrwebRecord,
   type RrwebReplayerConstructor,
+  trimToFirstSnapshot,
 } from "../src/index";
 
 const event = (timestamp: number): ReplayEvent => ({
@@ -78,6 +79,31 @@ describe("createRecorder", () => {
     await Promise.resolve();
     expect(uploads).toHaveLength(2);
     expect(uploads[1]?.seq).toBe(1);
+  });
+
+  test("seqStart resumes chunk numbering (cross-reload continuity)", async () => {
+    const { record, state } = fakeRecorder();
+    const uploads: ReplayChunk[] = [];
+    createRecorder({
+      chunkMaxEvents: 1,
+      project: "web",
+      record,
+      seqStart: 7,
+      upload: (chunk) => {
+        uploads.push(chunk);
+      },
+    });
+    state.emit!(event(10));
+    state.emit!(event(20));
+    await Promise.resolve();
+    expect(uploads[0]?.seq).toBe(7);
+    expect(uploads[1]?.seq).toBe(8);
+  });
+
+  test("forwards a default periodic checkout to rrweb", () => {
+    const { record, state } = fakeRecorder();
+    createRecorder({ project: "web", record, upload: () => {} });
+    expect(state.config?.checkoutEveryNms).toBe(60_000);
   });
 
   test("manual flush emits a partial chunk; empty flush is a no-op", async () => {
@@ -235,5 +261,37 @@ describe("createReplayPlayer", () => {
       target: document.createElement("div"),
     });
     expect(played).toBe(false);
+  });
+});
+
+describe("trimToFirstSnapshot", () => {
+  const meta = (timestamp: number): ReplayEvent => ({
+    data: {},
+    timestamp,
+    type: 4,
+  });
+  const fullSnapshot = (timestamp: number): ReplayEvent => ({
+    data: {},
+    timestamp,
+    type: 2,
+  });
+
+  test("drops leading mutations before the first Meta+FullSnapshot", () => {
+    const events = [event(1), event(2), meta(3), fullSnapshot(4), event(5)];
+    expect(trimToFirstSnapshot(events)).toEqual([
+      meta(3),
+      fullSnapshot(4),
+      event(5),
+    ]);
+  });
+
+  test("leaves an already-anchored stream untouched", () => {
+    const events = [meta(1), fullSnapshot(2), event(3)];
+    expect(trimToFirstSnapshot(events)).toEqual(events);
+  });
+
+  test("returns input unchanged when no FullSnapshot exists", () => {
+    const events = [event(1), event(2)];
+    expect(trimToFirstSnapshot(events)).toEqual(events);
   });
 });

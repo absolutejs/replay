@@ -1,6 +1,6 @@
 {
   "name": "@absolutejs/replay",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Session replay for the AbsoluteJS observability stack. A tiny zero-hard-dependency recorder (rrweb is an optional, lazy-loaded peer) that chunks DOM recordings and uploads them via a pluggable transport (@absolutejs/blob), privacy-masking by default. Plus chunk assembly + a framework-agnostic player. Stamps a replayId for @absolutejs/beacon to cross-link errors to the exact session.",
   "repository": {
     "type": "git",
