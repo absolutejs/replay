@@ -290,6 +290,222 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
 };
 
 // =============================================================================
+// Controller — production "batteries" over createRecorder.
+//
+// createRecorder gives you raw chunks; deciding WHEN and HOW to ship them is the
+// part every app otherwise re-derives (and gets wrong). The controller keeps a
+// bounded ring of recent chunks (nothing stored server-side by default) and
+// uploads the tail only when it matters — a bug report (`flush`), an auto-error
+// (`flushThrottled`), or the page unloading (`flushOnUnload`). Uploads are
+// gzipped and size-batched so no POST can exceed a gateway body cap no matter
+// how large the session (rrweb JSON compresses ~10:1). The unload path uses
+// `keepalive` so the final moments survive the tab closing, and only fires for
+// sessions that already mattered — so nothing orphaned is ever stored.
+//
+// Wire contract: POST `{ chunks: WireChunk[]; manifest: ReplayManifest }` to
+// your `endpoint`; the gzip path sets `content-encoding: gzip` (decompress
+// before validating). Pairs with @absolutejs/errors' ingest + the typed
+// ReplayChunk/ReplayManifest shapes above.
+// =============================================================================
+
+/** The per-chunk wire shape (the manifest carries replayId/project). */
+export type WireChunk = Pick<ReplayChunk, "events" | "from" | "seq" | "to">;
+
+type EncodedBody = { body: BodyInit; gzip: boolean };
+
+export type ReplayControllerOptions = {
+  /** Ingest route accepting `{ chunks: WireChunk[]; manifest: ReplayManifest }`. */
+  endpoint: string;
+  project: string;
+  release?: string;
+  environment?: string;
+  /** Chunks of context to retain (~10 min @ 5s/chunk). Default 120. */
+  maxRingChunks?: number;
+  /** Min ms between throttled auto-error flushes. Default 30000. */
+  flushThrottleMs?: number;
+  /** Max uncompressed bytes per upload batch. Default 700000. */
+  maxBatchBytes?: number;
+  /** Max bytes for the keepalive unload tail (stay under the ~64KB cap). Default 55000. */
+  maxTailBytes?: number;
+  /** Masking / record-injection / cadence forwarded to the recorder. */
+  recorder?: Omit<
+    RecorderOptions,
+    "project" | "upload" | "replayId" | "release" | "environment"
+  >;
+  /** Override fetch (tests / proxies). Default global fetch. */
+  fetch?: typeof fetch;
+};
+
+export type ReplayController = {
+  /** The session id — feed to `@absolutejs/beacon`'s `getReplayId`. */
+  getReplayId: () => string;
+  /** Persist the full ring now (a bug report). Returns the replayId. */
+  flush: () => Promise<string | null>;
+  /** Persist the ring, but at most once per `flushThrottleMs` (auto-errors). */
+  flushThrottled: () => void;
+  /** Keepalive tail-flush on `pagehide` — no-op unless the session mattered. */
+  flushOnUnload: () => void;
+  /** Stop recording and flush the final chunk. */
+  stop: () => Promise<void>;
+};
+
+const RING_CHUNKS_DEFAULT = 120;
+const FLUSH_THROTTLE_DEFAULT_MS = 30_000;
+const BATCH_BYTES_DEFAULT = 700_000;
+const TAIL_BYTES_DEFAULT = 55_000;
+
+// gzip a JSON string when supported (Response(json).body avoids needing a Blob);
+// fall back to plain text where CompressionStream / a body stream is absent.
+const encodeBody = async (json: string): Promise<EncodedBody> => {
+  const plain: EncodedBody = { body: json, gzip: false };
+  if (typeof CompressionStream === "undefined") return plain;
+  const stream = new Response(json).body;
+  if (stream === null) return plain;
+  try {
+    const compressed = await new Response(
+      stream.pipeThrough(new CompressionStream("gzip")),
+    ).arrayBuffer();
+    return { body: compressed, gzip: true };
+  } catch {
+    return plain;
+  }
+};
+
+const toWire = (chunk: ReplayChunk): WireChunk => ({
+  events: chunk.events,
+  from: chunk.from,
+  seq: chunk.seq,
+  to: chunk.to,
+});
+
+// Group chunks into size-bounded batches so no single POST exceeds a gateway
+// cap (ingest must be idempotent on (replayId, seq), which storeReplay is).
+const batchByBytes = (chunks: WireChunk[], maxBytes: number): WireChunk[][] => {
+  const batches: WireChunk[][] = [];
+  let current: WireChunk[] = [];
+  let bytes = 0;
+  const flush = (): void => {
+    if (current.length > 0) batches.push(current);
+    current = [];
+    bytes = 0;
+  };
+  for (const chunk of chunks) {
+    const size = JSON.stringify(chunk).length;
+    if (current.length > 0 && bytes + size > maxBytes) flush();
+    current.push(chunk);
+    bytes += size;
+  }
+  flush();
+  return batches;
+};
+
+export const createReplayController = (
+  options: ReplayControllerOptions,
+): ReplayController => {
+  const maxRing = options.maxRingChunks ?? RING_CHUNKS_DEFAULT;
+  const throttleMs = options.flushThrottleMs ?? FLUSH_THROTTLE_DEFAULT_MS;
+  const maxBatchBytes = options.maxBatchBytes ?? BATCH_BYTES_DEFAULT;
+  const maxTailBytes = options.maxTailBytes ?? TAIL_BYTES_DEFAULT;
+  const doFetch = options.fetch ?? globalThis.fetch;
+
+  const ring: ReplayChunk[] = [];
+  let lastFlush = 0;
+  // True once a report/error/unload made this session worth keeping.
+  let sessionMatters = false;
+
+  const recorder = createRecorder({
+    project: options.project,
+    upload: (chunk) => {
+      ring.push(chunk);
+      while (ring.length > maxRing) ring.shift();
+    },
+    ...(options.release !== undefined ? { release: options.release } : {}),
+    ...(options.environment !== undefined
+      ? { environment: options.environment }
+      : {}),
+    ...(options.recorder ?? {}),
+  });
+
+  const postBatch = async (
+    batch: WireChunk[],
+    manifest: ReplayManifest,
+  ): Promise<void> => {
+    const { body, gzip } = await encodeBody(
+      JSON.stringify({ chunks: batch, manifest }),
+    );
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+    };
+    if (gzip) headers["content-encoding"] = "gzip";
+    await doFetch(options.endpoint, {
+      body,
+      credentials: "include",
+      headers,
+      method: "POST",
+    });
+  };
+
+  const flush = async (): Promise<string | null> => {
+    if (typeof window === "undefined") return null;
+    sessionMatters = true;
+    await recorder.flush();
+    if (ring.length === 0) return recorder.replayId;
+    const manifest = recorder.manifest();
+    const wire = ring.map(toWire);
+    try {
+      await Promise.all(
+        batchByBytes(wire, maxBatchBytes).map((batch) =>
+          postBatch(batch, manifest),
+        ),
+      );
+      lastFlush = Date.now();
+    } catch {
+      // Best-effort upload — still return the replayId so the report can link
+      // the session (a later chunk / error flush can still populate it).
+    }
+    return recorder.replayId;
+  };
+
+  const flushThrottled = (): void => {
+    if (Date.now() - lastFlush < throttleMs) return;
+    lastFlush = Date.now();
+    void flush();
+  };
+
+  const flushOnUnload = (): void => {
+    if (!sessionMatters || typeof window === "undefined") return;
+    const tail: ReplayChunk[] = [];
+    let bytes = 0;
+    for (let index = ring.length - 1; index >= 0; index -= 1) {
+      const chunk = ring[index];
+      if (chunk === undefined) continue;
+      const size = JSON.stringify(chunk).length;
+      if (tail.length > 0 && bytes + size > maxTailBytes) break;
+      tail.unshift(chunk);
+      bytes += size;
+    }
+    if (tail.length === 0) return;
+    void doFetch(options.endpoint, {
+      body: JSON.stringify({
+        chunks: tail.map(toWire),
+        manifest: recorder.manifest(),
+      }),
+      headers: { "content-type": "application/json" },
+      keepalive: true,
+      method: "POST",
+    }).catch(() => undefined);
+  };
+
+  return {
+    flush,
+    flushOnUnload,
+    flushThrottled,
+    getReplayId: () => recorder.replayId,
+    stop: () => recorder.stop(),
+  };
+};
+
+// =============================================================================
 // Playback
 // =============================================================================
 
