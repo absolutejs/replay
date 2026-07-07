@@ -262,6 +262,47 @@ describe("createReplayPlayer", () => {
     });
     expect(played).toBe(false);
   });
+
+  test("injects the replayer baseline CSS once per document", async () => {
+    const FakeReplayer = function () {
+      return { destroy: () => {}, pause: () => {}, play: () => {} };
+    } as unknown as RrwebReplayerConstructor;
+    document
+      .querySelectorAll("#absolutejs-replay-baseline")
+      .forEach((node) => node.remove());
+    await createReplayPlayer({
+      Replayer: FakeReplayer,
+      events: [event(1)],
+      target: document.createElement("div"),
+    });
+    await createReplayPlayer({
+      Replayer: FakeReplayer,
+      events: [event(1)],
+      target: document.createElement("div"),
+    });
+    const tags = document.querySelectorAll("#absolutejs-replay-baseline");
+    expect(tags.length).toBe(1);
+    expect(tags[0]?.textContent).toContain(
+      ".replayer-wrapper {\n  position: relative;\n}",
+    );
+    expect(tags[0]?.textContent).toContain(".replayer-mouse-tail");
+  });
+
+  test("injectStyles:false leaves the document alone", async () => {
+    const FakeReplayer = function () {
+      return { destroy: () => {}, pause: () => {}, play: () => {} };
+    } as unknown as RrwebReplayerConstructor;
+    document
+      .querySelectorAll("#absolutejs-replay-baseline")
+      .forEach((node) => node.remove());
+    await createReplayPlayer({
+      Replayer: FakeReplayer,
+      events: [event(1)],
+      injectStyles: false,
+      target: document.createElement("div"),
+    });
+    expect(document.querySelector("#absolutejs-replay-baseline")).toBe(null);
+  });
 });
 
 describe("trimToFirstSnapshot", () => {
