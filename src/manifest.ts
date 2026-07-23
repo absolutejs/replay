@@ -10,7 +10,7 @@ const MIN_CHUNK_INTERVAL_MS = 250;
  * per-session values, not configuration. No tools: the recorder lives in the
  * visitor's browser — there is no server runtime to hand a tool. */
 export const manifest = defineManifest<RecorderOptions>()({
-  contract: 1,
+  contract: 2,
   identity: {
     accent: "#ef4444",
     category: "observability",
@@ -81,35 +81,33 @@ export const manifest = defineManifest<RecorderOptions>()({
   wiring: [
     {
       description:
-        "Start recording in the browser and upload chunks to your storage. Add class=\"rr-block\" to any element you never want recorded.",
+        'Start recording in the browser and upload chunks to your storage. Add class="rr-block" to any element you never want recorded.',
       id: "default",
       client: {
         client: {
           code: [
-            "const replayRecorder = createRecorder({",
-            "\t// TODO: point the upload at your storage — a small POST route,",
-            "\t// or presigned PUT URLs from @absolutejs/blob.",
-            "\tupload: async (chunk) => {",
-            "\t\t// (string concatenation — wiring templates reserve ${...})",
-            "\t\tawait fetch('/api/replays/' + chunk.replayId + '/' + chunk.seq, {",
-            "\t\t\tbody: JSON.stringify(chunk),",
-            "\t\t\theaders: { 'content-type': 'application/json' },",
-            "\t\t\tmethod: 'POST'",
-            "\t\t});",
-            "\t},",
-            "\t...${settings}",
-            "});",
+            "const startReplay = (uploadReplayChunk: ChunkUpload) =>",
+            "\tcreateRecorder({",
+            "\t\tupload: uploadReplayChunk,",
+            "\t\t...${settings}",
+            "\t});",
             "",
-            "// Cross-link errors to this session (@absolutejs/beacon):",
-            "//   initBeacon({ getReplayId: () => replayRecorder.replayId, project: 'web' });",
-            "// Flush the tail on errors so the replay around them is stored:",
-            "window.addEventListener('error', () => void replayRecorder.flush());",
+            "// Supply uploadReplayChunk from the host application's typed",
+            "// mutation boundary (for React, a React Query mutationFn).",
+            "// Then feed recorder.replayId to @absolutejs/beacon.",
           ].join("\n"),
-          imports: [{ from: "@absolutejs/replay", names: ["createRecorder"] }],
+          imports: [
+            { from: "@absolutejs/replay", names: ["createRecorder"] },
+            {
+              from: "@absolutejs/replay",
+              names: ["ChunkUpload"],
+              typeOnly: true,
+            },
+          ],
           placement: "client-entry",
         },
       },
-      title: "Record sessions and upload chunks",
+      title: "Record sessions through a typed host mutation",
     },
   ],
 });
