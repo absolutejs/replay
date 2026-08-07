@@ -53,6 +53,20 @@ window.addEventListener("error", () => void recorder.flush());
 Add `class="rr-block"` to a node to skip recording it, or `class="rr-mask"` to
 mask its text. Use `maskAllText: true` for high-sensitivity apps.
 
+For application-level error/report capture, use `createReplayController`. It
+keeps an in-memory ring until the session matters, coalesces racing flushes,
+uploads at most two batches concurrently, applies a 10-second deadline to each
+attempt, removes acknowledged chunks, and retains failed chunks for retry.
+
+```ts
+const replay = createReplayController({
+  endpoint: "/ingest/replay",
+  project: "web",
+  maxUploadConcurrency: 2,
+  uploadTimeoutMs: 10_000,
+});
+```
+
 ## Play back
 
 ```ts
@@ -76,6 +90,14 @@ createRecorder(options) => Recorder
 //             chunkIntervalMs? (5000), chunkMaxEvents? (200),
 //             maskAllInputs? (true), maskAllText? (false), blockClass?, maskTextClass?,
 //             recordCanvas?, record? (inject rrweb), onError?
+
+createReplayController(options) => ReplayController
+//   ReplayController: { getReplayId(), flush(), flushThrottled(),
+//                       flushOnUnload(), stop() }
+//   options: endpoint, project, release?, environment?, maxRingChunks?,
+//            flushThrottleMs?, maxBatchBytes?, maxTailBytes?,
+//            maxUploadConcurrency? (2), uploadTimeoutMs? (10000),
+//            persistSessionKey?, recorder?, fetch?
 
 assembleReplay(chunks) => ReplayEvent[]              // sort by seq, flatten
 createReplayPlayer({ target, events, Replayer?, autoplay?, speed? }) => Promise<ReplayPlayer>

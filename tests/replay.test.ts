@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import {
   assembleReplay,
   createRecorder,
+  createReplayController,
   createReplayPlayer,
   type RecordConfig,
   type ReplayChunk,
@@ -190,6 +191,106 @@ describe("createRecorder", () => {
     state.emit!(event(1));
     await recorder.flush();
     expect((errors[0] as Error).message).toBe("S3 down");
+  });
+});
+
+describe("createReplayController", () => {
+  test("drops acknowledged chunks instead of uploading them again", async () => {
+    const { record, state } = fakeRecorder();
+    let requests = 0;
+    const controller = createReplayController({
+      fetch: async () => {
+        requests += 1;
+
+        return new Response(null, { status: 202 });
+      },
+      project: "web",
+      recorder: { chunkMaxEvents: 1, record },
+      endpoint: "/ingest/replay",
+    });
+    state.emit!(event(1));
+    await controller.flush();
+    await controller.flush();
+    expect(requests).toBe(1);
+  });
+
+  test("retains failed chunks and retries them on the next flush", async () => {
+    const { record, state } = fakeRecorder();
+    let requests = 0;
+    let healthy = false;
+    const controller = createReplayController({
+      fetch: async () => {
+        requests += 1;
+
+        return new Response(null, { status: healthy ? 202 : 400 });
+      },
+      project: "web",
+      recorder: { chunkMaxEvents: 1, record },
+      endpoint: "/ingest/replay",
+    });
+    state.emit!(event(1));
+    await controller.flush();
+    healthy = true;
+    await controller.flush();
+    await controller.flush();
+    expect(requests).toBe(2);
+  });
+
+  test("coalesces racing flushes and bounds batch upload concurrency", async () => {
+    const { record, state } = fakeRecorder();
+    let active = 0;
+    let maxActive = 0;
+    let requests = 0;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const controller = createReplayController({
+      fetch: async () => {
+        requests += 1;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await gate;
+        active -= 1;
+
+        return new Response(null, { status: 202 });
+      },
+      maxBatchBytes: 1,
+      maxUploadConcurrency: 2,
+      project: "web",
+      recorder: { chunkMaxEvents: 1, record },
+      endpoint: "/ingest/replay",
+    });
+    for (let timestamp = 1; timestamp <= 5; timestamp += 1) {
+      state.emit!(event(timestamp));
+    }
+    const first = controller.flush();
+    const second = controller.flush();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(active).toBe(2);
+    release();
+    await Promise.all([first, second]);
+    expect(requests).toBe(5);
+    expect(maxActive).toBe(2);
+  });
+
+  test("applies a deadline to each batch request", async () => {
+    const { record, state } = fakeRecorder();
+    let signal: AbortSignal | null | undefined;
+    const controller = createReplayController({
+      fetch: async (_input, init) => {
+        signal = init?.signal;
+
+        return new Response(null, { status: 202 });
+      },
+      project: "web",
+      recorder: { chunkMaxEvents: 1, record },
+      endpoint: "/ingest/replay",
+      uploadTimeoutMs: 25,
+    });
+    state.emit!(event(1));
+    await controller.flush();
+    expect(signal).toBeInstanceOf(AbortSignal);
   });
 });
 

@@ -329,6 +329,10 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
 export type WireChunk = Pick<ReplayChunk, "events" | "from" | "seq" | "to">;
 
 type EncodedBody = { body: BodyInit; gzip: boolean };
+export type ReplayFetch = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
 
 export type ReplayControllerOptions = {
   /** Ingest route accepting `{ chunks: WireChunk[]; manifest: ReplayManifest }`. */
@@ -344,6 +348,10 @@ export type ReplayControllerOptions = {
   maxBatchBytes?: number;
   /** Max bytes for the keepalive unload tail (stay under the ~64KB cap). Default 55000. */
   maxTailBytes?: number;
+  /** Maximum replay batches uploaded at once. Default 2. */
+  maxUploadConcurrency?: number;
+  /** Deadline for each replay batch attempt. Default 10000ms. */
+  uploadTimeoutMs?: number;
   /** sessionStorage key under which to persist `{ replayId, nextSeq }` so a
    *  full page reload RESUMES the same replay session (same id, continuing seq)
    *  instead of orphaning the prior recording and minting a fresh one. Matters
@@ -356,7 +364,7 @@ export type ReplayControllerOptions = {
     "project" | "upload" | "replayId" | "release" | "environment"
   >;
   /** Override fetch (tests / proxies). Default global fetch. */
-  fetch?: typeof fetch;
+  fetch?: ReplayFetch;
 };
 
 export type ReplayController = {
@@ -376,6 +384,8 @@ const RING_CHUNKS_DEFAULT = 120;
 const FLUSH_THROTTLE_DEFAULT_MS = 30_000;
 const BATCH_BYTES_DEFAULT = 700_000;
 const TAIL_BYTES_DEFAULT = 55_000;
+const UPLOAD_CONCURRENCY_DEFAULT = 2;
+const UPLOAD_TIMEOUT_DEFAULT_MS = 10_000;
 // Backoff schedule for a failed upload batch (ms before each attempt). Covers
 // transient 5xx / network blips without hammering; a hard outage still gives up
 // after the last attempt (the next signal flush retries the whole ring).
@@ -461,6 +471,31 @@ const batchByBytes = (chunks: WireChunk[], maxBytes: number): WireChunk[][] => {
   return batches;
 };
 
+const mapConcurrent = async <Input, Output>(
+  inputs: Input[],
+  concurrency: number,
+  run: (input: Input) => Promise<Output>,
+): Promise<Output[]> => {
+  const results = new Array<Output>(inputs.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < inputs.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const input = inputs[index];
+      if (input !== undefined) results[index] = await run(input);
+    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(Math.max(1, concurrency), inputs.length) },
+      worker,
+    ),
+  );
+
+  return results;
+};
+
 export const createReplayController = (
   options: ReplayControllerOptions,
 ): ReplayController => {
@@ -468,10 +503,14 @@ export const createReplayController = (
   const throttleMs = options.flushThrottleMs ?? FLUSH_THROTTLE_DEFAULT_MS;
   const maxBatchBytes = options.maxBatchBytes ?? BATCH_BYTES_DEFAULT;
   const maxTailBytes = options.maxTailBytes ?? TAIL_BYTES_DEFAULT;
+  const maxUploadConcurrency =
+    options.maxUploadConcurrency ?? UPLOAD_CONCURRENCY_DEFAULT;
+  const uploadTimeoutMs = options.uploadTimeoutMs ?? UPLOAD_TIMEOUT_DEFAULT_MS;
   const doFetch = options.fetch ?? globalThis.fetch;
 
   const ring: ReplayChunk[] = [];
   let lastFlush = 0;
+  let activeFlush: Promise<void> | null = null;
   // True once a report/error/unload made this session worth keeping.
   let sessionMatters = false;
 
@@ -528,9 +567,17 @@ export const createReplayController = (
           credentials: "include",
           headers,
           method: "POST",
+          signal: AbortSignal.timeout(uploadTimeoutMs),
         });
         if (response.ok) return;
         lastError = new Error(`replay ingest responded ${response.status}`);
+        if (
+          response.status < 500 &&
+          response.status !== 408 &&
+          response.status !== 429
+        ) {
+          break;
+        }
       } catch (error) {
         lastError = error;
       }
@@ -538,24 +585,51 @@ export const createReplayController = (
     throw lastError ?? new Error("replay upload failed");
   };
 
+  const runFlush = async (): Promise<void> => {
+    await recorder.flush();
+    if (ring.length === 0) return;
+    const manifest = recorder.manifest();
+    const snapshot = [...ring];
+    const batches = batchByBytes(snapshot.map(toWire), maxBatchBytes);
+    const results = await mapConcurrent(
+      batches,
+      maxUploadConcurrency,
+      async (batch) => {
+        try {
+          await postBatch(batch, manifest);
+
+          return batch.map((chunk) => chunk.seq);
+        } catch {
+          return [];
+        }
+      },
+    );
+    const acknowledged = new Set(results.flat());
+    if (acknowledged.size > 0) {
+      // Chunks can arrive while the snapshot uploads. Remove only snapshot
+      // sequences the server acknowledged; failed and newly-recorded chunks
+      // remain pending for the next flush.
+      for (let index = ring.length - 1; index >= 0; index -= 1) {
+        const chunk = ring[index];
+        if (chunk !== undefined && acknowledged.has(chunk.seq)) {
+          ring.splice(index, 1);
+        }
+      }
+      lastFlush = Date.now();
+    }
+  };
+
   const flush = async (): Promise<string | null> => {
     if (typeof window === "undefined") return null;
     sessionMatters = true;
-    await recorder.flush();
-    if (ring.length === 0) return recorder.replayId;
-    const manifest = recorder.manifest();
-    const wire = ring.map(toWire);
-    try {
-      await Promise.all(
-        batchByBytes(wire, maxBatchBytes).map((batch) =>
-          postBatch(batch, manifest),
-        ),
-      );
-      lastFlush = Date.now();
-    } catch {
-      // Best-effort upload — still return the replayId so the report can link
-      // the session (a later chunk / error flush can still populate it).
-    }
+    // One transport flush per controller. Callers that race (report + beacon +
+    // visibility event) share the same promise instead of replaying the ring in
+    // parallel and starving application requests on the browser connection.
+    activeFlush ??= runFlush().finally(() => {
+      activeFlush = null;
+    });
+    await activeFlush;
+
     return recorder.replayId;
   };
 
