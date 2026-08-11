@@ -1,6 +1,6 @@
 import { defineManifest } from "@absolutejs/manifest";
 import { Type } from "@sinclair/typebox";
-import type { RecorderOptions } from "./index";
+import type { RecorderOptions } from "./recorder";
 
 const MAX_CHUNK_EVENTS = 10000;
 const MIN_CHUNK_INTERVAL_MS = 250;
@@ -97,9 +97,12 @@ export const manifest = defineManifest<RecorderOptions>()({
             "// Then feed recorder.replayId to @absolutejs/beacon.",
           ].join("\n"),
           imports: [
-            { from: "@absolutejs/replay", names: ["createRecorder"] },
             {
-              from: "@absolutejs/replay",
+              from: "@absolutejs/replay/recorder",
+              names: ["createRecorder"],
+            },
+            {
+              from: "@absolutejs/replay/recorder",
               names: ["ChunkUpload"],
               typeOnly: true,
             },

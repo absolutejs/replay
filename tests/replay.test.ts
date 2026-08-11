@@ -38,6 +38,27 @@ const fakeRecorder = () => {
   return { record, state };
 };
 
+describe("recorder bundle", () => {
+  test("keeps the lazy rrweb recorder chunk below the full-player bundle", async () => {
+    const result = await Bun.build({
+      entrypoints: [`${import.meta.dir}/fixtures/recorder-entry.ts`],
+      minify: true,
+      splitting: true,
+      target: "browser",
+    });
+    expect(result.success).toBe(true);
+
+    const chunks = result.outputs.filter(
+      (output) => output.kind === "chunk" && output.path.endsWith(".js"),
+    );
+    const largestChunkBytes = Math.max(...chunks.map((output) => output.size));
+
+    // rrweb 2.1.1's namespace import is about 270 KB minified because it also
+    // retains Replayer. The named record adapter is about 190 KB.
+    expect(largestChunkBytes).toBeLessThan(220_000);
+  });
+});
+
 describe("createRecorder", () => {
   test("replayId is available synchronously (for the beacon seam)", () => {
     const { record } = fakeRecorder();

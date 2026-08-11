@@ -13,8 +13,10 @@ DOM replay around it. Re-assembles chunks for a framework-agnostic player.
 
 - **Zero hard dependencies.** DOM recording genuinely needs a heavy engine, so
   the recorder wraps rrweb — but rrweb is an **optional peer**, lazy-imported
-  only when you start recording (and fully injectable). Replay is the one heavy
-  feature; its weight never lands on a page that isn't recording.
+  only when you start recording (and fully injectable). The lazy recorder uses
+  rrweb's named `record` export so recorder-only apps do not retain its player.
+  Replay is the one heavy feature; its weight never lands on a page that isn't
+  recording.
 - **Plain TS, not Effect** — like `beacon`, it's browser-first where bytes are
   the cost. Replay's own code is ~1 KB gz.
 - **Private by default** — inputs are masked (`maskAllInputs: true`). Recording
@@ -29,7 +31,7 @@ bun add @absolutejs/replay rrweb
 ## Record
 
 ```ts
-import { createRecorder } from "@absolutejs/replay";
+import { createRecorder } from "@absolutejs/replay/recorder";
 import { initBeacon } from "@absolutejs/beacon";
 
 const recorder = createRecorder({
@@ -70,7 +72,7 @@ const replay = createReplayController({
 ## Play back
 
 ```ts
-import { assembleReplay, createReplayPlayer } from "@absolutejs/replay";
+import { assembleReplay, createReplayPlayer } from "@absolutejs/replay/player";
 
 const chunks = await loadChunksFromBlob(replayId); // your storage read
 const player = await createReplayPlayer({
