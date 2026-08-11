@@ -1,7 +1,7 @@
 {
   "name": "@absolutejs/replay",
-  "version": "0.3.3",
-  "description": "Session replay for the AbsoluteJS observability stack. A tiny zero-hard-dependency recorder (rrweb is an optional, lazy-loaded peer) that chunks DOM recordings and uploads them via a pluggable transport (@absolutejs/blob), privacy-masking by default. Plus chunk assembly + a framework-agnostic player. Stamps a replayId for @absolutejs/beacon to cross-link errors to the exact session.",
+  "version": "0.3.4",
+  "description": "Session replay for the AbsoluteJS observability stack. A tiny recorder that lazy-loads @rrweb/record, chunks DOM recordings, and uploads them via a pluggable transport (@absolutejs/blob), privacy-masking by default. Plus chunk assembly + a framework-agnostic player through the optional rrweb peer. Stamps a replayId for @absolutejs/beacon to cross-link errors to the exact session.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/absolutejs/replay.git"
@@ -47,7 +47,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts src/player.ts src/recorder.ts src/manifest.ts --outdir dist --root ./src --sourcemap --splitting --target=browser --external @absolutejs/manifest --external '@absolutejs/manifest/*' --external @sinclair/typebox --external '@sinclair/typebox/*' --external rrweb --external 'rrweb/*' && tsc --project tsconfig.build.json && absolute-manifest emit",
+    "build": "rm -rf dist && bun build src/index.ts src/player.ts src/recorder.ts src/manifest.ts --outdir dist --root ./src --sourcemap --splitting --target=browser --external @absolutejs/manifest --external '@absolutejs/manifest/*' --external @rrweb/record --external '@rrweb/record/*' --external @sinclair/typebox --external '@sinclair/typebox/*' --external rrweb --external 'rrweb/*' && tsc --project tsconfig.build.json && absolute-manifest emit",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"./**/*.{ts,json,md}\"",
@@ -99,6 +99,7 @@
   },
   "dependencies": {
     "@absolutejs/manifest": "0.7.2",
+    "@rrweb/record": "2.1.1",
     "@sinclair/typebox": "0.34.52"
   }
 }

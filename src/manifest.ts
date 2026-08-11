@@ -15,7 +15,7 @@ export const manifest = defineManifest<RecorderOptions>()({
     accent: "#ef4444",
     category: "observability",
     description:
-      "Session replay with ~1 KB of glue: records DOM sessions via a lazy-loaded rrweb, chunks them, and uploads each chunk through a pluggable transport (wire it to @absolutejs/blob or a small POST route). Exposes a replayId so @absolutejs/beacon can stamp every error with the exact session around it. Inputs are masked by default.",
+      "Session replay with ~1 KB of glue: records DOM sessions via a lazy-loaded recorder engine, chunks them, and uploads each chunk through a pluggable transport (wire it to @absolutejs/blob or a small POST route). Exposes a replayId so @absolutejs/beacon can stamp every error with the exact session around it. Inputs are masked by default.",
     docsUrl: "https://github.com/absolutejs/replay",
     name: "@absolutejs/replay",
     tagline: "Record visitor sessions so you can replay what went wrong.",
@@ -25,7 +25,8 @@ export const manifest = defineManifest<RecorderOptions>()({
       {
         name: "rrweb",
         range: "^2.0.0",
-        reason: "DOM recording engine — lazy-loaded only when recording starts",
+        reason:
+          "Optional playback engine — lazy-loaded only when a player is created",
       },
     ],
   },

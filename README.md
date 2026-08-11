@@ -1,7 +1,7 @@
 # @absolutejs/replay
 
-> Session replay for the AbsoluteJS observability stack. ~1 KB of glue;
-> [rrweb](https://github.com/rrweb-io/rrweb) is an optional, lazy-loaded peer.
+> Session replay for the AbsoluteJS observability stack. ~1 KB of glue around
+> a lazy-loaded recorder, plus an optional rrweb-powered player.
 
 Records DOM sessions, chunks them, and uploads each chunk via a pluggable
 transport (wire [`@absolutejs/blob`](https://www.npmjs.com/package/@absolutejs/blob)).
@@ -11,12 +11,11 @@ DOM replay around it. Re-assembles chunks for a framework-agnostic player.
 
 ## Design
 
-- **Zero hard dependencies.** DOM recording genuinely needs a heavy engine, so
-  the recorder wraps rrweb — but rrweb is an **optional peer**, lazy-imported
-  only when you start recording (and fully injectable). The lazy recorder uses
-  rrweb's named `record` export so recorder-only apps do not retain its player.
-  Replay is the one heavy feature; its weight never lands on a page that isn't
-  recording.
+- **Capability-split engine.** DOM recording genuinely needs a heavy engine, so
+  the recorder lazy-loads the separately compiled `@rrweb/record` package only
+  when recording starts (and remains fully injectable). Playback uses the
+  optional `rrweb` peer through a separate `/player` entry. Apps that contain
+  both capabilities do not merge the recorder into rrweb's full player bundle.
 - **Plain TS, not Effect** — like `beacon`, it's browser-first where bytes are
   the cost. Replay's own code is ~1 KB gz.
 - **Private by default** — inputs are masked (`maskAllInputs: true`). Recording

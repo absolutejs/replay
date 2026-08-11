@@ -1,4 +1,4 @@
-// Keep the recorder behind its own lazy boundary while exposing only rrweb's
-// named record export to consumer bundlers. Importing the rrweb namespace here
-// retains the player and its dependencies in recorder-only application chunks.
-export { record } from "rrweb";
+// @rrweb/record ships the recorder as a separately compiled module. Using it
+// here prevents an application that also imports rrweb's Replayer from merging
+// both lazy capabilities back into rrweb's full shared namespace chunk.
+export { record } from "@rrweb/record";

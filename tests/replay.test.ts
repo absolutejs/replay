@@ -53,9 +53,30 @@ describe("recorder bundle", () => {
     );
     const largestChunkBytes = Math.max(...chunks.map((output) => output.size));
 
-    // rrweb 2.1.1's namespace import is about 270 KB minified because it also
-    // retains Replayer. The named record adapter is about 190 KB.
-    expect(largestChunkBytes).toBeLessThan(220_000);
+    // rrweb 2.1.1's namespace import is about 270 KB minified. The separately
+    // compiled recorder engine is about 77 KB.
+    expect(largestChunkBytes).toBeLessThan(120_000);
+  });
+
+  test("keeps recorder and player engines distinct when an app uses both", async () => {
+    const result = await Bun.build({
+      entrypoints: [`${import.meta.dir}/fixtures/combined-entry.ts`],
+      minify: true,
+      splitting: true,
+      target: "browser",
+    });
+    expect(result.success).toBe(true);
+
+    const chunkBytes = result.outputs
+      .filter(
+        (output) => output.kind === "chunk" && output.path.endsWith(".js"),
+      )
+      .map((output) => output.size);
+
+    expect(chunkBytes.some((size) => size > 60_000 && size < 120_000)).toBe(
+      true,
+    );
+    expect(chunkBytes.some((size) => size > 250_000)).toBe(true);
   });
 });
 

@@ -2,12 +2,9 @@
  * @absolutejs/replay — session replay for the AbsoluteJS observability stack.
  *
  * DOM recording genuinely needs a heavy, hard-to-replicate engine, so the
- * recorder wraps **rrweb** — but rrweb is an **optional, lazy-loaded peer**
- * (and fully injectable), so:
- *   - this package has ZERO hard dependencies; rrweb is only pulled when you
- *     actually start recording, and only into the replay code path (opt-in
- *     weight — replay is the one heavy feature, never on a page that isn't
- *     recording).
+ * recorder wraps **@rrweb/record**, lazy-loaded (and fully injectable), so the
+ * engine is only pulled when recording starts and stays separate from rrweb's
+ * optional playback path.
  *   - it's plain TS, NOT Effect — like @absolutejs/beacon, it's browser-first
  *     where bytes are the cost; the server-side rigor lives in the ingest /
  *     storage layers.
