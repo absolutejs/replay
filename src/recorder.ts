@@ -17,8 +17,8 @@
  *
  * PRIVACY: inputs are masked by default (`maskAllInputs: true`). Recording user
  * sessions is a real liability surface — keep masking on, add `blockClass` /
- * `maskTextClass` to sensitive nodes, and use `maskAllText` for high-sensitivity
- * apps.
+ * `blockSelector` / `maskTextClass` to sensitive nodes, and use `maskAllText`
+ * for high-sensitivity apps.
  */
 
 // =============================================================================
@@ -38,6 +38,7 @@ export type RecordConfig = {
   maskAllInputs?: boolean;
   maskTextSelector?: string;
   blockClass?: string;
+  blockSelector?: string;
   maskTextClass?: string;
   recordCanvas?: boolean;
   /** Take a fresh FullSnapshot at least this often (ms). Keeps a recent
@@ -145,6 +146,9 @@ export type RecorderOptions = {
   maskAllText?: boolean;
   /** CSS class whose subtrees are not recorded. Default `'rr-block'`. */
   blockClass?: string;
+  /** CSS selector whose matching subtrees are not recorded. Use this for DOM
+   *  owned by browser extensions or embedded third-party widgets. */
+  blockSelector?: string;
   /** CSS class whose text is masked. Default `'rr-mask'`. */
   maskTextClass?: string;
   /** Record `<canvas>` (heavier). Default false. */
@@ -247,6 +251,9 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
     emit,
     maskAllInputs: options.maskAllInputs ?? true,
     maskTextClass: options.maskTextClass ?? "rr-mask",
+    ...(options.blockSelector !== undefined
+      ? { blockSelector: options.blockSelector }
+      : {}),
     ...(checkoutEveryNms > 0 ? { checkoutEveryNms } : {}),
     ...(options.maskAllText === true ? { maskTextSelector: "*" } : {}),
     ...(options.recordCanvas === true ? { recordCanvas: true } : {}),

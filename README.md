@@ -42,6 +42,7 @@ const recorder = createRecorder({
       JSON.stringify(chunk),
     ),
   // privacy defaults: maskAllInputs: true, blockClass: 'rr-block', maskTextClass: 'rr-mask'
+  blockSelector: "[data-extension-owned]", // optional third-party DOM exclusion
 });
 
 // Cross-link errors → this session:
@@ -52,7 +53,9 @@ window.addEventListener("error", () => void recorder.flush());
 ```
 
 Add `class="rr-block"` to a node to skip recording it, or `class="rr-mask"` to
-mask its text. Use `maskAllText: true` for high-sensitivity apps.
+mask its text. Use `blockSelector` for browser-extension or embedded third-party
+DOM that the application does not own. Use `maskAllText: true` for
+high-sensitivity apps.
 
 For application-level error/report capture, use `createReplayController`. It
 keeps an in-memory ring until the session matters, coalesces racing flushes,
@@ -89,7 +92,8 @@ createRecorder(options) => Recorder
 //   Recorder: { replayId, manifest(), flush(), stop() }
 //   options:  project, upload, release?, environment?, replayId?,
 //             chunkIntervalMs? (5000), chunkMaxEvents? (200),
-//             maskAllInputs? (true), maskAllText? (false), blockClass?, maskTextClass?,
+//             maskAllInputs? (true), maskAllText? (false), blockClass?, blockSelector?,
+//             maskTextClass?,
 //             recordCanvas?, record? (inject rrweb), onError?
 
 createReplayController(options) => ReplayController

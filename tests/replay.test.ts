@@ -2,6 +2,7 @@
  * Tests for @absolutejs/replay (under happy-dom, with injected rrweb fakes).
  */
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
 import {
   assembleReplay,
   createRecorder,
@@ -58,25 +59,57 @@ describe("recorder bundle", () => {
     expect(largestChunkBytes).toBeLessThan(120_000);
   });
 
-  test("keeps recorder and player engines distinct when an app uses both", async () => {
-    const result = await Bun.build({
-      entrypoints: [`${import.meta.dir}/fixtures/combined-entry.ts`],
-      minify: true,
-      splitting: true,
-      target: "browser",
-    });
-    expect(result.success).toBe(true);
+  test("keeps packaged recorder and player engines distinct in a consumer build", async () => {
+    const temp = await mkdtemp(`${import.meta.dir}/.consumer-build-`);
+    try {
+      const packageResult = await Bun.build({
+        entrypoints: [
+          `${import.meta.dir}/../src/player.ts`,
+          `${import.meta.dir}/../src/recorder.ts`,
+        ],
+        external: [
+          "@absolutejs/manifest",
+          "@absolutejs/manifest/*",
+          "@sinclair/typebox",
+          "@sinclair/typebox/*",
+          "rrweb",
+          "rrweb/*",
+        ],
+        outdir: `${temp}/package`,
+        root: `${import.meta.dir}/../src`,
+        sourcemap: "external",
+        splitting: true,
+        target: "browser",
+      });
+      expect(packageResult.success).toBe(true);
 
-    const chunkBytes = result.outputs
-      .filter(
-        (output) => output.kind === "chunk" && output.path.endsWith(".js"),
-      )
-      .map((output) => output.size);
+      const entry = `${temp}/consumer.ts`;
+      await Bun.write(
+        entry,
+        'export { createReplayPlayer } from "./package/player.js";\n' +
+          'export { createReplayController } from "./package/recorder.js";\n',
+      );
+      const consumerResult = await Bun.build({
+        entrypoints: [entry],
+        minify: true,
+        splitting: true,
+        target: "browser",
+      });
+      expect(consumerResult.success).toBe(true);
 
-    expect(chunkBytes.some((size) => size > 60_000 && size < 120_000)).toBe(
-      true,
-    );
-    expect(chunkBytes.some((size) => size > 250_000)).toBe(true);
+      const chunkBytes = consumerResult.outputs
+        .filter(
+          (output) => output.kind === "chunk" && output.path.endsWith(".js"),
+        )
+        .map((output) => output.size);
+
+      expect(chunkBytes.some((size) => size > 60_000 && size < 120_000)).toBe(
+        true,
+      );
+      expect(chunkBytes.some((size) => size > 250_000)).toBe(true);
+    } finally {
+      await rm(temp, { force: true, recursive: true });
+    }
   });
 });
 
@@ -217,6 +250,17 @@ describe("createRecorder", () => {
     });
     expect(open.state.config?.maskAllInputs).toBe(false);
     expect(open.state.config?.maskTextSelector).toBe("*");
+  });
+
+  test("forwards a block selector for extension and third-party DOM", () => {
+    const { record, state } = fakeRecorder();
+    createRecorder({
+      blockSelector: "[data-extension-owned]",
+      project: "web",
+      record,
+      upload: () => {},
+    });
+    expect(state.config?.blockSelector).toBe("[data-extension-owned]");
   });
 
   test("upload failures are routed to onError, never thrown", async () => {
